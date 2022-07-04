@@ -90,7 +90,7 @@ class DuplicateDictJson(DuplicateDict):
 
         if needs_pairs:
             result = chain([('__keyvaluepairs__', True)], chain(
-                *map(lambda x: ((f'key_{x[0]}', x[1][0]), (f'value_{x[0]}', x[1][1])), enumerate(result))))
+                *map(lambda x: ((f'key_{x[0]}', x[1][0]), (f'val_{x[0]}', x[1][1])), enumerate(result))))
 
         return result
 
@@ -272,8 +272,6 @@ def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
         for k, k2 in list(zip(entries.keys(), schema.keys())):
             val = entries._getTuple(k)
             val2 = schema._getTuple(k2)
-
-            # dupe_dict_to_json_schema(val, val2)
 
             # Transform key and value from schema
             if isinstance(k, (list, tuple, dict)):
@@ -476,6 +474,7 @@ class ArgumentParser2(argparse.ArgumentParser):
 
     def error(self, message):
         self.print_help()
+        pause()
         self.exit(2, f'\n{self.prog}: error: {message}\n')
 
 
