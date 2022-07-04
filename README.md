@@ -42,3 +42,5 @@ This should be used to enforce specific packing types to fix repacking for some 
 
 # Credits
 Original script was made by Arsym, who figured out the compression.
+
+Thanks to [Timo654](https://github.com/Timo654) for extensively testing the script.
