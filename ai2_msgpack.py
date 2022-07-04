@@ -426,11 +426,12 @@ def repack_msg(entries: Union[dict, list]) -> bytes:
 
 
 def pause_win():
+    print()
     os.system('pause')
 
 
 def pause_other():
-    input('Press any key to continue . . . ')
+    input('\nPress any key to continue . . . ')
 
 
 # Make sure terminal colors appear nicely on windows cmd + powershell
@@ -601,5 +602,5 @@ def main():
 
 
 if __name__ == '__main__':
-    if main():
+    if main() is not True:
         pause()
