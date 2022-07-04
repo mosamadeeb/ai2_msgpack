@@ -466,7 +466,7 @@ mode_help = """\nMode: If neither \"--unpack\" nor \"--repack\" are specified, t
 Schema: If \"--use-schema\" is specified, then:
     for each file unpacked, another file with extension \".msgschema.json\" will be created, which will contain type information for the unpacked json file.
     for each file repacked, if its schema exists, it will be used when repacking to get the correct type information.
-This should be used to enforce specific packing types if repacked files do not work in the game (i.e. some .code files).
+This should be used to enforce specific packing types to fix repacking for some files (i.e. some .code files).
 """
 
 
@@ -545,7 +545,7 @@ def main():
         print(f'Reading \"{file}\"...')
 
         try:
-            if file.endswith('.json') and not args.unpack:
+            if file.endswith('.json') and not file.endswith('.msgschema.json') and not args.unpack:
                 # Repack
                 with open(file, 'r', encoding='utf-8') as f:
                     msg = json_load(f, file, args.use_schema)
