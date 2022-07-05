@@ -495,47 +495,36 @@ def pack_extra(entries, default=default_hook):
 
 def repack_msg(entries: Union[dict, list]) -> bytes:
     has_extra_data = '__has_extra_data__' in entries
+    should_be_compressed = '__should_be_compressed__' in entries
+
+    if should_be_compressed:
+        entries.remove('__should_be_compressed__')
+
     if has_extra_data:
         entries.remove('__has_extra_data__')
 
-    packed = b''
-
-    should_be_compressed = '__should_be_compressed__' in entries
-    if not should_be_compressed:
-        if not has_extra_data:
-            return pack_extra(entries)
+        if all(map(lambda x: isinstance(x, bytes), entries)):
+            block = reduce(operator.add, entries, b'')
+        else:
+            block = reduce(operator.add, map(pack_extra, entries), b'')
+    elif should_be_compressed:
+        block = pack_extra(entries[0])
     else:
-        entries.remove('__should_be_compressed__')
+        block = pack_extra(entries)
 
-    for entry in entries:
-        if isinstance(entry, dict):
-            block = pack_extra(entry)
-        else:
-            should_be_compressed = '__should_be_compressed__' in entry
-            if should_be_compressed:
-                entry.remove('__should_be_compressed__')
+    if should_be_compressed:
+        sizes = []
+        packed_arr = []
 
-            if '__has_extra_data__' in entry:
-                entry.remove('__has_extra_data__')
-                block = reduce(operator.add, map(pack_extra, entry))
-            else:
-                block = pack_extra(entry[0])
+        CHUNK_SIZE = 32_767
+        for i in range((len(block) // CHUNK_SIZE) + 1):
+            chunk = block[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]
+            sizes.append(len(chunk))
+            packed_arr.append(lz4.block.compress(chunk, store_size=False))
 
-        if not should_be_compressed:
-            packed += block
-        else:
-            sizes = []
-            packed_arr = []
-
-            CHUNK_SIZE = 32_767
-            for i in range((len(block) // CHUNK_SIZE) + 1):
-                chunk = block[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]
-                sizes.append(len(chunk))
-                packed_arr.append(lz4.block.compress(chunk, store_size=False))
-
-            packed += pack_extra([ExtBufferSizes(sizes)] + packed_arr)
-
-    return packed
+        return pack_extra([ExtBufferSizes(sizes)] + packed_arr)
+    else:
+        return block
 
 
 def pause_win():
