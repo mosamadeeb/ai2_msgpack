@@ -492,7 +492,7 @@ def colorize_blue(text):
     return colorize(text, Fore.BLUE)
 
 
-VERSION = 'v1.0'
+VERSION = 'v1.1'
 AUTHOR = 'SutandoTsukai181, original script by Arsym'
 
 mode_help = """\nMode: If neither \"--unpack\" nor \"--repack\" are specified, then both are enabled at the same time (i.e. json files will be repacked, non-json files will be unpacked).\n
