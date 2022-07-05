@@ -343,7 +343,7 @@ def unpack_msg(data: bytes) -> Union[dict, list]:
         if not entry:
             raise Exception('No objects were unpacked')
 
-        if not (hasattr(entry, '__iter__') and (isinstance(entry[0], ExtType) or isinstance(entry[0], ExtTypeBase))):
+        if not (isinstance(entry, (list, tuple)) and len(entry) and isinstance(entry[0], (ExtType, ExtTypeBase))):
             entries.append(entry)
             continue
 
@@ -378,9 +378,6 @@ def pack_extra(entries, default=default_hook):
 
 
 def repack_msg(entries: Union[dict, list]) -> bytes:
-    if isinstance(entries, dict):
-        entries = [entries]
-
     has_extra_data = '__has_extra_data__' in entries
     if has_extra_data:
         entries.remove('__has_extra_data__')
