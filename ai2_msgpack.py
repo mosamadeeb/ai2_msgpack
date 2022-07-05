@@ -303,7 +303,11 @@ def json_load(file, path, use_schema):
     entries = json.load(file, object_pairs_hook=duplicate_dict_hook_json)
 
     if use_schema:
-        with open(path[:-5] + '.msgschema.json', encoding='utf-8') as f:
+        schema_path = path[:-5] + '.msgschema.json'
+        if not os.path.isfile(schema_path):
+            raise Exception(f'Cannot find schema file: {schema_path}')
+
+        with open(schema_path, encoding='utf-8') as f:
             schema = json.load(f, object_pairs_hook=duplicate_dict_hook_json)
         entries = json_to_dupe_dict_schema(entries, schema)
     else:
