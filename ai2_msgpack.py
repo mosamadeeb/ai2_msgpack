@@ -620,8 +620,8 @@ def main():
         elif os.path.isdir(input_path):
             folder_count += 1
             for path in os.listdir(input_path):
-                if os.path.isfile(path):
-                    input_files.append((True, os.path.join(input_path, path)))
+                if os.path.isfile(file_path := os.path.join(input_path, path)):
+                    input_files.append((True, file_path))
         else:
             print(colorize_red(f'Skipping input path because it does not exist: \"{input_path}\"\n'))
 
