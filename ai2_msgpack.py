@@ -59,7 +59,7 @@ def decrypt_save(data: bytes):
         chunk_type = SaveDataChunkType(chunk_type)
 
         if chunk_type == SaveDataChunkType.PADDING:
-            decrypted.append(DuplicateDict({'__data_type__': chunk_type.name, '__padding_size__': len(data)}))
+            decrypted.append(DuplicateDict([('__data_type__', chunk_type.name), ('__padding_size__', len(data))]))
         else:
             chunk = new_rijndael().decrypt(data[offset: offset + chunk_size])
 
@@ -68,7 +68,7 @@ def decrypt_save(data: bytes):
             if len(unpacked_chunk) and isinstance(unpacked_chunk[0], bytes):
                 unpacked_chunk[0] = unpack_msg(unpacked_chunk[0])
 
-            decrypted.append(DuplicateDict({'__data_type__': chunk_type.name, '__data__': unpacked_chunk}))
+            decrypted.append(DuplicateDict([('__data_type__', chunk_type.name), ('__data__', unpacked_chunk)]))
 
         offset += chunk_size
 
@@ -116,99 +116,76 @@ class DuplicateDict(dict):
     Not very functional outside of this program's usage.
     """
 
+    _list: List[tuple]
+
     def __init__(self, *args, **kwargs):
+        self._list = list()
         self.update(*args, **kwargs)
 
     def update(self, *args, **kwargs):
-        for k, v in dict(*args, **kwargs).items():
+        for k, v in chain(*args):
+            self[k] = v
+        for k, v in kwargs.items():
             self[k] = v
 
     def __hash__(self) -> int:
         return len(self).__hash__()
 
     def __setitem__(self, key, value):
-        new_val = (len(self), value)
-        try:
-            self[key]
-            try:
-                if self[key][0] == '__dupes__':
-                    self[key].append(new_val)
-                else:
-                    raise Exception
-            except Exception:
-                super(DuplicateDict, self).__setitem__(key, ['__dupes__', self._getTuple(key), new_val])
-        except KeyError:
-            super(DuplicateDict, self).__setitem__(key, new_val)
+        self._list.append((key, value))
 
-    def _getTuple(self, key):
-        return super().__getitem__(key)
+    def set_tuple(self, index, value):
+        self._list[index] = value
 
-    def _setTuple(self, key, value):
-        super(DuplicateDict, self).__setitem__(key, value)
+    def get_tuple(self, index):
+        return self._list[index]
 
     def __getitem__(self, key):
-        val = super().__getitem__(key)
-        return val[1] if isinstance(val, tuple) else val
+        # return next(chain(filter(lambda x: x[0] == key, self._list), [(None, None)]))[1]
+        return next(chain([item[1] for item in self._list if item[0] == key], [None]))
 
     def __len__(self) -> int:
-        return reduce(operator.add, map(lambda x: (len(self[x]) - 1) if (isinstance(self[x], list) and '__dupes__' in self[x]) else 1, self), 0)
+        return len(self._list)
+
+    def __contains__(self, key) -> bool:
+        # This is sufficient for the purposes of this program
+        # return o in list(chain(*self._list))[::2]
+        return any([True for item in self._list if item[0] == key])
 
     def items(self):
-        # This is very slow because of sorting
-        # Maybe a (priority) queue-like approach would be better, push stuff to the queue based on their insertion index
+        return iter(self._list)
 
-        result = []
-
-        for k in self:
-
-            if isinstance(self[k], list) and '__dupes__' in self[k]:
-                result.extend(map(lambda v: (v[0], k, v[1]), self[k][1:]))
-            else:
-                val = self._getTuple(k)
-                result.append((val[0], k, val[1]))
-
-        return map(lambda x: (x[1], x[2]), sorted(result))
+    def items_list(self):
+        # Compatiblity method for DuplicateDictJson
+        return self.items()
 
 
 class DuplicateDictJson(DuplicateDict):
+    def needs_pairs(self):
+        return any([True for item in self._list if not isinstance(item[0], (str, int, float))])
+
     def items(self):
-        result = []
+        result = super().items()
 
-        needs_pairs = False
-        for k in self:
-            if not (needs_pairs or isinstance(k, (str, int, float))):
-                needs_pairs = True
-
-            if isinstance(self[k], list) and '__dupes__' in self[k]:
-                result.extend(map(lambda v: (v[0], k, v[1]), self[k][1:]))
-            else:
-                val = self._getTuple(k)
-                result.append((val[0], k, val[1]))
-
-        result = map(lambda x: (x[1], x[2]), sorted(result))
-
-        if needs_pairs:
+        if self.needs_pairs():
             result = chain([('__keyvaluepairs__', True)], chain(
                 *map(lambda x: ((f'key_{x[0]}', x[1][0]), (f'val_{x[0]}', x[1][1])), enumerate(result))))
 
         return result
 
+    def items_list(self):
+        return super().items()
+
 
 def duplicate_dict_hook(pairs):
     """Builds DuplicateDict from msgpack"""
 
-    d = DuplicateDictJson()
-
-    for k, v in pairs:
-        d[k] = v
-
-    return d
+    return DuplicateDictJson(pairs)
 
 
 def duplicate_dict_hook_json(pairs):
     """Builds DuplicateDict from json"""
 
-    d = DuplicateDict()
     try:
         # Here, we only need to check for lists because other dicts have already been cast to DuplicateDict
         if pairs[0][0] == '__keyvaluepairs__':
@@ -217,15 +194,12 @@ def duplicate_dict_hook_json(pairs):
     except:
         pass
 
-    for k, v in pairs:
-        d[k] = v
-
-    return object_hook_json(d)
+    return object_hook_json(DuplicateDict(pairs))
 
 
 def default_hook_json(obj):
     if isinstance(obj, Timestamp):
-        return {'__msgpack_timestamp__': True, 'unix_nano': obj.to_unix_nano()}
+        return DuplicateDictJson([('__msgpack_timestamp__', True), ('unix_nano', obj.to_unix_nano())])
     return obj
 
 
@@ -264,23 +238,21 @@ def default_hook(obj):
     raise TypeError("Unknown type: %r" % (obj,))
 
 
-def dupe_dict_to_json(entries: DuplicateDict):
+def dupe_dict_to_json(entries: DuplicateDictJson):
     """Converts non-str keys to strings while storing their type."""
 
     if isinstance(entries, (list, tuple)):
         list(map(dupe_dict_to_json, entries))
     elif isinstance(entries, DuplicateDict):
-        for k in list(entries.keys()):
-            val = entries._getTuple(k)
-            dupe_dict_to_json(val)
+        for i, (k, v) in enumerate(entries.items_list()):
+            dupe_dict_to_json(v)
 
             # if not isinstance(k, str):
             if type(k).__name__ in KEY_TYPES:
-                entries.pop(k)
-                entries._setTuple(f'keytype_{type(k).__name__}_{k}', val)
+                entries.set_tuple(i, (f'keytype_{type(k).__name__}_{k}', v))
 
 
-def dupe_dict_to_json_schema(entries: DuplicateDict):
+def dupe_dict_to_json_schema(entries: DuplicateDictJson):
     """Converts non-str keys to strings while storing their type."""
 
     if isinstance(entries, list):
@@ -291,34 +263,21 @@ def dupe_dict_to_json_schema(entries: DuplicateDict):
     #     return tuple(map(dupe_dict_to_json_schema, entries))
     elif isinstance(entries, DuplicateDict):
         schema_entries = DuplicateDictJson()
-        for k in list(entries.keys()):
-            val = entries._getTuple(k)
 
-            key_name = k
+        for i, (k, v) in enumerate(entries.items_list()):
             # if not isinstance(k, str):
             if type(k).__name__ in KEY_TYPES:
-                entries.pop(k)
-                key_name = f'keytype_{type(k).__name__}_{k}'
-                entries._setTuple(key_name, val)
+                k = f'keytype_{type(k).__name__}_{k}'
 
-            if isinstance(val, tuple):
-                if isinstance(val[1], bytes):
-                    val = (val[0], unpack_msg(val[1]))
-                    entries._setTuple(key_name, val)
-                val = (val[0], dupe_dict_to_json_schema(val[1]))
-            else:
-                # List
-                for i, item in filter(lambda x: isinstance(x[1], bytes), enumerate(val[1:])):
-                    val[i] = (item[0], unpack_msg(item[1]))
-                val = [val[0]] + list(map(lambda v: (v[0], dupe_dict_to_json_schema(v[1])), val[1:]))
+            if isinstance(v, bytes):
+                v = unpack_msg(v)
 
-            # Transform key and value to schema
-            if isinstance(k, (list, tuple, dict)):
-                key_name = dupe_dict_to_json_schema(k)
-
-            schema_entries._setTuple(key_name, val)
+            entries.set_tuple(i, (k, v))
+            schema_entries[dupe_dict_to_json_schema(k)] = dupe_dict_to_json_schema(v)
 
         return schema_entries
+    elif isinstance(entries, Timestamp):
+        return dupe_dict_to_json_schema(default_hook_json(entries))
 
     return type(entries).__name__
 
@@ -359,14 +318,15 @@ def json_to_dupe_dict(entries: DuplicateDict):
     if isinstance(entries, (list, tuple)):
         list(map(json_to_dupe_dict, entries))
     elif isinstance(entries, DuplicateDict):
-        for k in list(entries.keys()):
-            val = entries._getTuple(k)
-            json_to_dupe_dict(val)
-
+        for i, (k, v) in enumerate(entries.items()):
             if isinstance(k, str) and k.startswith('keytype_'):
-                entries.pop(k)
                 _, t, x = k.split('_', 2)
-                entries._setTuple(KEY_TYPES[t](x), val)
+                k = KEY_TYPES[t](x)
+
+            json_to_dupe_dict(k)
+            json_to_dupe_dict(v)
+
+            entries.set_tuple(i, (k, v))
 
 
 def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
@@ -380,28 +340,16 @@ def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
     # elif isinstance(entries, tuple):
     #     return tuple(map(json_to_dupe_dict_schema, entries, schema))
     elif isinstance(entries, DuplicateDict):
-        for k, k2 in list(zip(entries.keys(), schema.keys())):
-            val = entries._getTuple(k)
-            val2 = schema._getTuple(k2)
+        for i, ((k1, v1), (k2, v2)) in enumerate(zip(entries.items(), schema.items())):
+            k1 = json_to_dupe_dict_schema(k1, k2)
+            v1 = json_to_dupe_dict_schema(v1, v2)
 
-            # Transform key and value from schema
-            if isinstance(k, (list, tuple, dict)):
-                k = json_to_dupe_dict_schema(k, k2)
+            # TODO: Maybe check if values have '__should_be_compressed__'?
+            if isinstance(k1, str) and k1.startswith('keytype_'):
+                _, t, x = k1.split('_', 2)
+                k1 = KEY_TYPES[t](x)
 
-            # TODO: Check if values have '__should_be_compressed__'
-            if isinstance(val, tuple):
-                val = (val[0], json_to_dupe_dict_schema(val[1], val2[1]))
-            else:
-                # List
-                val = [val[0]] + \
-                    list(map(lambda v, v2: (v[0], json_to_dupe_dict_schema(v[1], v2[1])), val[1:], val2[1:]))
-
-            if isinstance(k, str) and k.startswith('keytype_'):
-                entries.pop(k)
-                _, t, x = k.split('_', 2)
-                entries._setTuple(KEY_TYPES[t](x), val)
-            else:
-                entries._setTuple(k, val)
+            entries.set_tuple(i, (k1, v1))
 
         return entries
 
