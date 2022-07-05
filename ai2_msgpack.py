@@ -3,7 +3,9 @@ import json
 import operator
 import os
 import platform
+from enum import Enum
 from functools import reduce
+from hashlib import md5
 from itertools import chain, islice
 from typing import List, Union
 
@@ -12,6 +14,96 @@ import msgpack
 from colorama import Fore, Style, init
 from msgpack import ExtraData, ExtType, Timestamp
 from msgpack.msgint import *
+from py3rijndael import Pkcs7Padding, RijndaelCbc
+
+# Generated using System.Security.Cryptography.Rfc2898DeriveBytes.GetBytes()
+# Password: "frAQBc8Wsa1xVPfv"
+# Salt:     "JcrgRYwTiizs2trQ"
+RIJNDAEL_KEY = b'\x00\x6c\x01\x6a\xae\x7a\x12\x58\xd0\x4d\x70\xa1\x9e\x72\x28\x69'
+RIJNDAEL_IV = b'\x98\x06\xd3\x73\x1e\x56\xbd\xc7\x68\x5d\x25\xd6\xa1\x03\x49\x3f'
+
+
+def new_rijndael():
+    return RijndaelCbc(RIJNDAEL_KEY, RIJNDAEL_IV, Pkcs7Padding(16), 16)
+
+
+def unpack_skip_extra(data):
+    try:
+        return msgpack.unpackb(data)
+    except ExtraData as e:
+        return e.unpacked
+
+
+class SaveDataChunkType(Enum):
+    VERSION = 0
+    BYTES = 1
+    MENU = 2
+    PADDING = 3
+
+
+def decrypt_save(data: bytes):
+    decrypted = []
+
+    offset = 0
+    while offset + 0x30 <= len(data):
+        chunk_header = new_rijndael().decrypt(data[offset: offset + 0x30])
+        offset += 0x30
+
+        unpacked_header = unpack_skip_extra(chunk_header)
+
+        if len(unpacked_header) != 3:
+            raise Exception('Unexpected save chunk header format.')
+
+        chunk_type, chunk_size, chunk_hash = unpacked_header
+
+        chunk_type = SaveDataChunkType(chunk_type)
+
+        if chunk_type == SaveDataChunkType.PADDING:
+            decrypted.append(DuplicateDict({'__data_type__': chunk_type.name, '__padding_size__': len(data)}))
+        else:
+            chunk = new_rijndael().decrypt(data[offset: offset + chunk_size])
+
+            unpacked_chunk = unpack_skip_extra(chunk)
+
+            if len(unpacked_chunk) and isinstance(unpacked_chunk[0], bytes):
+                unpacked_chunk[0] = unpack_msg(unpacked_chunk[0])
+
+            decrypted.append(DuplicateDict({'__data_type__': chunk_type.name, '__data__': unpacked_chunk}))
+
+        offset += chunk_size
+
+    return decrypted
+
+
+def encrypt_save(entries: list):
+    encrypted = b''
+
+    for entry in entries:
+        if '__data_type__' not in entry:
+            raise Exception('Invalid save data json.')
+
+        chunk_type = SaveDataChunkType[entry['__data_type__']]
+
+        # If chunk type is PADDING, just add padding to the specified size
+        if chunk_type == SaveDataChunkType.PADDING:
+            pad_size = entry['__padding_size__']
+            chunk_hash = '0' * 32
+            chunk = b'\x00' * (pad_size - (len(encrypted) + 0x30))
+        else:
+            data = entry['__data__']
+            packed = repack_msg(data)
+
+            # Hash should be calculated before padding
+            chunk_hash = md5(packed).hexdigest()
+
+            chunk = new_rijndael().encrypt(packed)
+
+        chunk_size = len(chunk)
+        chunk_header = repack_msg([chunk_type, chunk_size, chunk_hash])
+
+        encrypted += new_rijndael().encrypt(chunk_header) + chunk
+
+    return encrypted
 
 
 class HashableList(list):
@@ -23,6 +115,13 @@ class DuplicateDict(dict):
     """A `dict` that allows duplicate keys.\n
     Not very functional outside of this program's usage.
     """
+
+    def __init__(self, *args, **kwargs):
+        self.update(*args, **kwargs)
+
+    def update(self, *args, **kwargs):
+        for k, v in dict(*args, **kwargs).items():
+            self[k] = v
 
     def __hash__(self) -> int:
         return len(self).__hash__()
@@ -160,6 +259,8 @@ class ExtBufferSizes(ExtTypeBase):
 def default_hook(obj):
     if isinstance(obj, ExtBufferSizes):
         return msgpack.ExtType(obj._code, reduce(operator.add, map(msgpack.packb, obj.sizes)))
+    if isinstance(obj, SaveDataChunkType):
+        return obj.value
     raise TypeError("Unknown type: %r" % (obj,))
 
 
@@ -183,6 +284,8 @@ def dupe_dict_to_json_schema(entries: DuplicateDict):
     """Converts non-str keys to strings while storing their type."""
 
     if isinstance(entries, list):
+        for i, item in filter(lambda x: isinstance(x[1], bytes), enumerate(entries)):
+            entries[i] = unpack_msg(item)
         return HashableList(map(dupe_dict_to_json_schema, entries))
     # elif isinstance(entries, tuple):
     #     return tuple(map(dupe_dict_to_json_schema, entries))
@@ -198,15 +301,20 @@ def dupe_dict_to_json_schema(entries: DuplicateDict):
                 key_name = f'keytype_{type(k).__name__}_{k}'
                 entries._setTuple(key_name, val)
 
-            # Transform key and value to schema
-            if isinstance(k, (list, tuple, dict)):
-                key_name = dupe_dict_to_json_schema(k)
-
             if isinstance(val, tuple):
+                if isinstance(val[1], bytes):
+                    val = (val[0], unpack_msg(val[1]))
+                    entries._setTuple(key_name, val)
                 val = (val[0], dupe_dict_to_json_schema(val[1]))
             else:
                 # List
+                for i, item in filter(lambda x: isinstance(x[1], bytes), enumerate(val[1:])):
+                    val[i] = (item[0], unpack_msg(item[1]))
                 val = [val[0]] + list(map(lambda v: (v[0], dupe_dict_to_json_schema(v[1])), val[1:]))
+
+            # Transform key and value to schema
+            if isinstance(k, (list, tuple, dict)):
+                key_name = dupe_dict_to_json_schema(k)
 
             schema_entries._setTuple(key_name, val)
 
@@ -265,7 +373,10 @@ def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
     """Converts keys back to their original type."""
 
     if isinstance(entries, list):
-        return HashableList(map(json_to_dupe_dict_schema, entries, schema))
+        entries = HashableList(map(json_to_dupe_dict_schema, entries, schema))
+        for i, item in filter(lambda x: isinstance(x[1], (list, tuple)) and '__should_be_compressed__' in x[1], enumerate(entries)):
+            entries[i] = repack_msg(item)
+        return entries
     # elif isinstance(entries, tuple):
     #     return tuple(map(json_to_dupe_dict_schema, entries, schema))
     elif isinstance(entries, DuplicateDict):
@@ -277,6 +388,7 @@ def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
             if isinstance(k, (list, tuple, dict)):
                 k = json_to_dupe_dict_schema(k, k2)
 
+            # TODO: Check if values have '__should_be_compressed__'
             if isinstance(val, tuple):
                 val = (val[0], json_to_dupe_dict_schema(val[1], val2[1]))
             else:
@@ -500,6 +612,8 @@ def main():
 
     parser.add_argument('-c', '--use-schema', dest='use_schema', action='store_true',
                         help='Write a schema along with unpacked files, and use an existing schema when repacking.')
+    parser.add_argument('-d', '--save-data', dest='save_data', action='store_true',
+                        help='Decrypt/encrypt save data files before unpacking/repacking. Enabling this means that all input files are save data files. This also enables \"--use-schema.\"')
 
     parser.add_argument('-a', '--overwrite-all', dest='overwrite', action='store_true',
                         help='Overwrite existing files without prompting.')
@@ -541,6 +655,12 @@ def main():
     if args.silent:
         args.overwrite = True
 
+    if args.save_data:
+        args.use_schema = True
+
+    unpack_func = decrypt_save if args.save_data else unpack_msg
+    repack_func = encrypt_save if args.save_data else repack_msg
+
     for from_folder, file in input_files:
         new_path = ''
         print(f'Reading \"{file}\"...')
@@ -564,7 +684,7 @@ def main():
                         print(colorize_blue(f'Skipped \"{new_path}\"\n'))
                         continue
 
-                msg = repack_msg(msg)
+                msg = repack_func(msg)
                 with open(new_path, 'wb') as f:
                     f.write(msg)
 
@@ -573,7 +693,7 @@ def main():
                 # Unpack
                 with open(file, 'rb') as f:
                     msg = f.read()
-                msg = unpack_msg(msg)
+                msg = unpack_func(msg)
 
                 new_path = os.path.join(args.output if (args.output and (use_output or not from_folder)) else os.path.dirname(file),
                                         os.path.basename(file) + '.json')
