@@ -257,7 +257,10 @@ def dupe_dict_to_json_schema(entries: DuplicateDictJson):
 
     if isinstance(entries, list):
         for i, item in filter(lambda x: isinstance(x[1], bytes), enumerate(entries)):
-            entries[i] = unpack_msg(item)
+            try:
+                entries[i] = unpack_msg(item)
+            except:
+                pass
         return HashableList(map(dupe_dict_to_json_schema, entries))
     # elif isinstance(entries, tuple):
     #     return tuple(map(dupe_dict_to_json_schema, entries))
@@ -270,13 +273,17 @@ def dupe_dict_to_json_schema(entries: DuplicateDictJson):
                 k = f'keytype_{type(k).__name__}_{k}'
 
             if isinstance(v, bytes):
-                v = unpack_msg(v)
+                try:
+                    v = unpack_msg(v)
+                except:
+                    pass
 
             entries.set_tuple(i, (k, v))
             schema_entries[dupe_dict_to_json_schema(k)] = dupe_dict_to_json_schema(v)
 
         return schema_entries
     elif isinstance(entries, Timestamp):
+        # Needs to be done for the schema to align properly with the json
         return dupe_dict_to_json_schema(default_hook_json(entries))
 
     return type(entries).__name__
@@ -334,8 +341,8 @@ def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
 
     if isinstance(entries, list):
         entries = HashableList(map(json_to_dupe_dict_schema, entries, schema))
-        for i, item in filter(lambda x: isinstance(x[1], (list, tuple)) and '__should_be_compressed__' in x[1], enumerate(entries)):
-            entries[i] = repack_msg(item)
+        if '__should_be_compressed__' in entries:
+            entries = repack_msg(entries)
         return entries
     # elif isinstance(entries, tuple):
     #     return tuple(map(json_to_dupe_dict_schema, entries, schema))
@@ -344,7 +351,6 @@ def json_to_dupe_dict_schema(entries: DuplicateDict, schema: DuplicateDict):
             k1 = json_to_dupe_dict_schema(k1, k2)
             v1 = json_to_dupe_dict_schema(v1, v2)
 
-            # TODO: Maybe check if values have '__should_be_compressed__'?
             if isinstance(k1, str) and k1.startswith('keytype_'):
                 _, t, x = k1.split('_', 2)
                 k1 = KEY_TYPES[t](x)
@@ -376,6 +382,25 @@ def json_load(file, path, use_schema):
     return entries
 
 
+def decompress_msg_list(items):
+    try:
+        if isinstance(items[0], ExtBufferSizes):
+            decompressed = b''
+            sizes: ExtBufferSizes = items[0]
+
+            for size, buffer in zip(sizes, items[1:]):
+                if not isinstance(buffer, bytes):
+                    raise Exception('Unknown file structure - Unable to decompress')
+
+                decompressed += lz4.block.decompress(buffer, uncompressed_size=size)
+
+            items = ['__should_be_compressed__', unpack_msg(decompressed)]
+    except:
+        pass
+
+    return HashableList(items)
+
+
 def unpack_extra(data, ext_hook=ExtType, strict_map_key=False):
     """Unpacks using msgpack continuously until no extra data exists."""
 
@@ -384,7 +409,7 @@ def unpack_extra(data, ext_hook=ExtType, strict_map_key=False):
     while True:
         try:
             unpacked.append(msgpack.unpackb(data, ext_hook=ext_hook, object_pairs_hook=duplicate_dict_hook,
-                                            list_hook=HashableList, strict_map_key=strict_map_key))
+                                            list_hook=decompress_msg_list, strict_map_key=strict_map_key))
             break
         except ExtraData as e:
             unpacked.append(e.unpacked)
@@ -401,40 +426,8 @@ def unpack_hook(code, data):
 
 
 def unpack_msg(data: bytes) -> Union[dict, list]:
-    entries = []
-
-    for entry in unpack_extra(data, ext_hook=unpack_hook):
-        if not entry:
-            raise Exception('No objects were unpacked')
-
-        if not (isinstance(entry, (list, tuple)) and len(entry) and isinstance(entry[0], (ExtType, ExtTypeBase))):
-            entries.append(entry)
-            continue
-
-        if not isinstance(entry[0], ExtBufferSizes):
-            raise Exception('Unknown file structure')
-
-        decompressed = b''
-        sizes: ExtBufferSizes = entry[0]
-
-        for size, buffer in zip(sizes, entry[1:]):
-            if not isinstance(buffer, bytes):
-                raise Exception('Unknown file structure')
-
-            decompressed += lz4.block.decompress(buffer, uncompressed_size=size)
-
-        unpacked = unpack_extra(decompressed)
-
-        if len(unpacked) != 1:
-            unpacked.insert(0, '__has_extra_data__')
-
-        unpacked.insert(0, '__should_be_compressed__')
-        entries.append(unpacked)
-
-    if len(entries) != 1:
-        entries.insert(0, '__has_extra_data__')
-
-    return entries if len(entries) != 1 else entries[0]
+    unpacked = unpack_extra(data, ext_hook=unpack_hook)
+    return unpacked[0] if len(unpacked) == 1 else (['__has_extra_data__'] + unpacked)
 
 
 def pack_extra(entries, default=default_hook):
@@ -442,37 +435,28 @@ def pack_extra(entries, default=default_hook):
 
 
 def repack_msg(entries: Union[dict, list]) -> bytes:
-    has_extra_data = '__has_extra_data__' in entries
-    should_be_compressed = '__should_be_compressed__' in entries
+    if isinstance(entries, list):
+        if '__has_extra_data__' in entries:
+            entries.remove('__has_extra_data__')
+            return reduce(operator.add, map(repack_msg, entries), b'')
+        elif '__should_be_compressed__' in entries:
+            if len(entries) != 2:
+                raise Exception('Unexpected structure for compression.')
 
-    if should_be_compressed:
-        entries.remove('__should_be_compressed__')
+            packed = repack_msg(entries[1])
 
-    if has_extra_data:
-        entries.remove('__has_extra_data__')
+            sizes = []
+            packed_arr = []
 
-        if all(map(lambda x: isinstance(x, bytes), entries)):
-            block = reduce(operator.add, entries, b'')
-        else:
-            block = reduce(operator.add, map(pack_extra, entries), b'')
-    elif should_be_compressed:
-        block = pack_extra(entries[0])
-    else:
-        block = pack_extra(entries)
+            CHUNK_SIZE = 32_767
+            for i in range((len(packed) // CHUNK_SIZE) + 1):
+                chunk = packed[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]
+                sizes.append(len(chunk))
+                packed_arr.append(lz4.block.compress(chunk, store_size=False))
 
-    if should_be_compressed:
-        sizes = []
-        packed_arr = []
+            return repack_msg([ExtBufferSizes(sizes)] + packed_arr)
 
-        CHUNK_SIZE = 32_767
-        for i in range((len(block) // CHUNK_SIZE) + 1):
-            chunk = block[i*CHUNK_SIZE:(i+1)*CHUNK_SIZE]
-            sizes.append(len(chunk))
-            packed_arr.append(lz4.block.compress(chunk, store_size=False))
-
-        return pack_extra([ExtBufferSizes(sizes)] + packed_arr)
-    else:
-        return block
+    return msgpack.packb(entries, default=default_hook)
 
 
 def pause_win():
