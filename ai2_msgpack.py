@@ -6,7 +6,7 @@ import platform
 from enum import Enum
 from functools import reduce
 from hashlib import md5
-from itertools import chain, islice
+from itertools import chain, filterfalse, islice
 from typing import List, Union
 
 import lz4.block
@@ -427,6 +427,11 @@ def unpack_hook(code, data):
 
 def unpack_msg(data: bytes) -> Union[dict, list]:
     unpacked = unpack_extra(data, ext_hook=unpack_hook)
+    compressed_indices = [i for i, x in enumerate(unpacked) if isinstance(x, list) and '__should_be_compressed__' in x]
+
+    if len(unpacked) != 1 and len(compressed_indices):
+        unpacked = ['__compressed_data_indices__', compressed_indices] + unpacked
+
     return unpacked[0] if len(unpacked) == 1 else (['__has_extra_data__'] + unpacked)
 
 
@@ -438,7 +443,16 @@ def repack_msg(entries: Union[dict, list]) -> bytes:
     if isinstance(entries, list):
         if '__has_extra_data__' in entries:
             entries.remove('__has_extra_data__')
-            return reduce(operator.add, map(repack_msg, entries), b'')
+            if '__compressed_data_indices__' in entries:
+                entries.remove('__compressed_data_indices__')
+                indices = entries.pop(0)
+
+                for i, entry in filterfalse(lambda x: x[0] in indices and isinstance(x[1], bytes), enumerate(entries)):
+                    entries[i] = repack_msg(entry)
+            else:
+                entries = map(repack_msg, entries)
+
+            return reduce(operator.add, entries, b'')
         elif '__should_be_compressed__' in entries:
             if len(entries) != 2:
                 raise Exception('Unexpected structure for compression.')
