@@ -1,12 +1,16 @@
 # ai2_msgpack
 Script for unpacking/repacking MessagePack files from AI: The Somnium Files - nirvanA Initiative.
 
+Also supports decrypting/encrypting save files.
+
 # Installation
 For Windows, just use the compiled [latest release](https://github.com/SutandoTsukai181/ai2_msgpack/releases).
 
 If you don't want to use that, then you have to get the "correct" requirements:
 
-This script needs a [specific fork of msgpack](https://github.com/SutandoTsukai181/msgpack-python-typed-ints) to work. You can either download the [wheels](https://github.com/SutandoTsukai181/msgpack-python-typed-ints/releases/tag/v1.0.5) and install them with `pip`, or you can just clone the [msgpack_typed_ints](https://github.com/SutandoTsukai181/msgpack-python-typed-ints) repository and put the `msgpack` folder in the same directory as this script.
+- `pip install py3rijndael`
+
+- This script needs a [specific fork of msgpack](https://github.com/SutandoTsukai181/msgpack-python-typed-ints) to work. You can either download the [wheels](https://github.com/SutandoTsukai181/msgpack-python-typed-ints/releases/tag/v1.0.5) and install them with `pip`, or you can just clone the [msgpack_typed_ints](https://github.com/SutandoTsukai181/msgpack-python-typed-ints) repository and put the `msgpack` folder in the same directory as this script.
 
 Installing a wheel will provide better performance due to the compiled cython implementation of msgpack. If you choose to clone the repo instead, you will be using the pure python fallback implementation, which will be a bit slower. Do note however, that installing the wheels will overwrite the official msgpack package, if you have it installed.
 
@@ -15,7 +19,7 @@ You can just drag and drop files to process them. If a file ends with `.json` it
 
 Here is the `--help` message for the full usage:
 ```
-usage: ai2_msgpack.exe [-h] [-o OUTPUT] [-u | -r] [-c] [-a] [-s] input [input ...]
+usage: ai2_msgpack.exe [-h] [-o OUTPUT] [-u | -r] [-c] [-d] [-a] [-s] input [input ...]
 
 Unpacks/repacks MessagePack files from Ai: The Somnium Files: nirvanA Initiative.
 
@@ -25,10 +29,13 @@ positional arguments:
 optional arguments:
   -h, --help            show this help message and exit
   -o OUTPUT, --output OUTPUT
-                        path to output directory (defaults to same directory as the input). If multiple input folders are given, this will be ignored for them.    
+                        path to output directory (defaults to same directory as the input). If multiple input folders
+                        are given, this will be ignored for them.
   -u, --unpack          Unpack non-json files into json, and ignore json files.
   -r, --repack          Repack json files into MessagePack, and ignore non-json files.
   -c, --use-schema      Write a schema along with unpacked files, and use an existing schema when repacking.
+  -d, --save-data       Decrypt/encrypt save data files before unpacking/repacking. Enabling this means that all input
+                        files are save data files. This also enables "--use-schema."
   -a, --overwrite-all   Overwrite existing files without prompting.
   -s, --silent          Remove all prompts during execution. Enabling this will enable "--overwrite-all".
 
